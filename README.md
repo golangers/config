@@ -1,0 +1,4 @@
+config
+======
+
+config for golang
