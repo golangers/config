@@ -7,6 +7,7 @@ import (
 	"io/ioutil"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 )
 
@@ -17,10 +18,10 @@ var (
 )
 
 type Config struct {
-	dataType  string
-	data      []byte
-	directory string
-	files     []string
+	dataType string
+	data     []byte
+	target   string
+	files    []string
 }
 
 func format(configPath string) []byte {
@@ -29,7 +30,7 @@ func format(configPath string) []byte {
 		log.Fatal("<format> error: ", err)
 	}
 
-	return regexpNote.ReplaceAll(data, []byte(``))
+	return bytes.TrimSpace(regexpNote.ReplaceAll(data, []byte(``)))
 }
 
 func readFiles(files ...string) []byte {
@@ -42,31 +43,32 @@ func readFiles(files ...string) []byte {
 		}(chContent, file)
 	}
 
-	buf := bytes.NewBufferString(`{`)
+	bytess := make([][]byte, 0, lfs)
 
 	for i := 1; i <= lfs; i++ {
 		content := <-chContent
-		if len(content) == 0 {
-			continue
-		}
 
-		buf.Write(content)
-		if i < lfs {
-			buf.WriteString(",")
+		if len(content) != 0 {
+			bytess = append(bytess, content)
 		}
 	}
 
+	buf := bytes.NewBufferString(`{`)
+	buf.Write(bytes.Join(bytess, []byte(`,`)))
 	buf.WriteString(`}`)
+
 	var contentBuf bytes.Buffer
-	json.Compact(&contentBuf, buf.Bytes())
+	err := json.Compact(&contentBuf, buf.Bytes())
+	if err != nil {
+		log.Debug("<readFiles> jsonData: ", buf.String())
+		log.Fatal("<readFiles> error: ", err)
+	}
 
 	return contentBuf.Bytes()
 }
 
 func loadFiles(files ...string) *Config {
-	conf := &Config{
-		dataType: "files",
-	}
+	filestmp := make([]string, 0, len(files))
 
 	for _, file := range files {
 		fileName := filepath.Base(file)
@@ -74,27 +76,39 @@ func loadFiles(files ...string) *Config {
 			continue
 		}
 
-		conf.files = append(conf.files, file)
+		filestmp = append(filestmp, file)
 	}
 
-	conf.data = readFiles(conf.files...)
-
-	return conf
+	return &Config{
+		data:  readFiles(filestmp...),
+		files: filestmp,
+	}
 }
 
 func Data(data string) *Config {
+	data = `{` + data + `}`
 	var buf bytes.Buffer
-	json.Compact(&buf, []byte(`{`+data+`}`))
-	conf := &Config{
+	err := json.Compact(&buf, []byte(data))
+	if err != nil {
+		log.Debug("<Data> jsonData: ", data)
+		log.Fatal("<Data> error: ", err)
+	}
+
+	return &Config{
 		dataType: "data",
 		data:     buf.Bytes(),
 	}
-
-	return conf
 }
 
 func Files(files ...string) *Config {
-	return loadFiles(files...)
+	conf := loadFiles(files...)
+
+	mu.Lock()
+	conf.dataType = "files"
+	conf.target = strings.Join(conf.files, ",")
+	mu.Unlock()
+
+	return conf
 }
 
 func Glob(pattern string) *Config {
@@ -103,18 +117,21 @@ func Glob(pattern string) *Config {
 		log.Fatal("<Glob> error: ", err)
 	}
 
-	return loadFiles(files...)
+	conf := loadFiles(files...)
+
+	mu.Lock()
+	conf.dataType = "glob"
+	conf.target = pattern
+	mu.Unlock()
+
+	return conf
 }
 
 func Dir(configDir string) *Config {
+	configDir = filepath.Clean(configDir)
 	fis, err := ioutil.ReadDir(configDir)
 	if err != nil {
 		log.Fatal("<Dir> error: ", err)
-	}
-
-	conf := &Config{
-		dataType:  "directory",
-		directory: filepath.Clean(configDir),
 	}
 
 	var files []string
@@ -124,14 +141,24 @@ func Dir(configDir string) *Config {
 			continue
 		}
 
-		files = append(files, filepath.Join(conf.directory, fileName))
+		files = append(files, filepath.Join(configDir, fileName))
 	}
 
-	return loadFiles(files...)
+	conf := loadFiles(files...)
+	mu.Lock()
+	conf.dataType = "directory"
+	conf.target = configDir
+	mu.Unlock()
+
+	return conf
 }
 
 func (c *Config) Load(i interface{}) *Config {
-	err := json.Unmarshal(c.data, i)
+	mu.RLock()
+	data := c.data
+	mu.RUnlock()
+
+	err := json.Unmarshal(data, i)
 	if err != nil {
 		log.Debug("<Config.Load> jsonData: ", c.String())
 		log.Fatal("<Config.Load> error: ", err)
@@ -141,13 +168,24 @@ func (c *Config) Load(i interface{}) *Config {
 }
 
 func (c *Config) Bytes() []byte {
+	mu.RLock()
+	defer mu.RUnlock()
 	return c.data
 }
 
 func (c *Config) String() string {
-	return string(c.data)
+	mu.RLock()
+	data := c.data
+	mu.RUnlock()
+
+	var buf bytes.Buffer
+	json.Indent(&buf, data, "", "\t")
+	return buf.String()
 }
 
 func (c *Config) Target() string {
-	return c.directory
+	mu.RLock()
+	defer mu.RUnlock()
+
+	return c.target
 }
