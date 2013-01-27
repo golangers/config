@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"golanger.com/log"
 	"io/ioutil"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sync"
