@@ -1,4 +1,1 @@
-config
-======
-
-config for golang
+doc.go
