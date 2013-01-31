@@ -167,14 +167,13 @@ func (c *Config) Load(i interface{}) *Config {
 	return c
 }
 
-func (c *Config) indent() bytes.Buffer {
+func (c *Config) indent() *bytes.Buffer {
 	mu.RLock()
 	data := c.data
 	mu.RUnlock()
 
-	var buf bytes.Buffer
-	json.Indent(&buf, data, "", "\t")
-
+	buf := bytes.NewBuffer(nil)
+	json.Indent(buf, data, "", "\t")
 	return buf
 }
 
